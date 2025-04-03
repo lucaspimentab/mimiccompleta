@@ -1,81 +1,86 @@
 import pandas as pd
 import numpy as np
-import shap
 import matplotlib.pyplot as plt
 import warnings
-from sklearn.model_selection import train_test_split, StratifiedKFold, RandomizedSearchCV, cross_val_predict
-from sklearn.impute import SimpleImputer
+import shap
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report, accuracy_score, precision_score, recall_score, f1_score
-from imblearn.over_sampling import SMOTE
+from sklearn.metrics import (roc_auc_score, accuracy_score, precision_score,
+                             recall_score, f1_score, classification_report, confusion_matrix)
 from xgboost import XGBClassifier
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
 
 warnings.filterwarnings("ignore")
 
-# 1. Carregar e preparar os dados
 df = pd.read_csv("Dataset.csv")
 df["gender"] = df["gender"].map({"F": 0, "M": 1})
-df["charlson_grave"] = (df["charlson"] > 7).astype(int)
-df["sapsii_log"] = np.log1p(df["sapsii"])
-df["interacao_oasis_sofa"] = df["oasis"] * df["sofa_24hours"]
-df["idade_ao_quadrado"] = df["idade"] ** 2
 
-X = df.drop(columns=["subject_id", "target", "gender", "stay_id"])
+df = df.loc[:, df.isnull().mean() < 0.7]
+
+
+X = df.drop(columns=["subject_id", "target", "stay_id"])
 y = df["target"]
 
-# 2. Imputar e escalar os dados inteiros
-imputer = SimpleImputer(strategy="mean")
-X_imp = imputer.fit_transform(X)
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X_imp)
-
-# 3. Definir modelo com melhores hiperparâmetros
-model = XGBClassifier(
-    objective="binary:logistic",
-    eval_metric="logloss",
-    random_state=42,
-    n_estimators=300,
-    max_depth=4,
-    learning_rate=0.03,
-    subsample=0.9,
-    colsample_bytree=0.9,
-    gamma=1,
-    min_child_weight=1,
-    reg_lambda=1,
-    reg_alpha=0
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
 )
 
-# 4. Avaliação com validação cruzada
-cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-y_prob_cv = cross_val_predict(model, X_scaled, y, cv=cv, method='predict_proba')[:, 1]
-threshold = 0.33
-y_pred_cv = (y_prob_cv > threshold).astype(int)
+pipeline = ImbPipeline(steps=[
+    ("imputer", IterativeImputer(estimator=LinearRegression(), max_iter=10, random_state=42)),
+    ("scaler", StandardScaler()),
+    ("smote", SMOTE(random_state=42)),
+    ("model", XGBClassifier(eval_metric='logloss', random_state=42))
+])
 
-# 5. Métricas globais (agregadas)
-roc_auc = roc_auc_score(y, y_prob_cv)
-precision = precision_score(y, y_pred_cv)
-recall = recall_score(y, y_pred_cv)
-f1 = f1_score(y, y_pred_cv)
-accuracy = accuracy_score(y, y_pred_cv)
+# Hiperparâmetros
+param_grid = {
+    "model__n_estimators": [100, 300],
+    "model__max_depth": [3, 5],
+    "model__learning_rate": [0.01, 0.03, 0.1],
+    "model__subsample": [0.8, 0.9],
+    "model__colsample_bytree": [0.8, 0.9]
+}
 
-print(f"🧠 AUC ROC (cross-val): {roc_auc:.4f}")
-print(f"📉 Matriz de Confusão:\n{confusion_matrix(y, y_pred_cv)}")
-print(f"\n🎯 Acurácia: {accuracy:.2f}")
-print(f"📊 Precisão: {precision:.2f}")
-print(f"📊 Recall: {recall:.2f}")
-print(f"📊 F1-Score: {f1:.2f}")
 
-# 6. Classification Report (global, sem separar as classes)
-report = classification_report(y, y_pred_cv, output_dict=True)
-report_df = pd.DataFrame(report).transpose().round(2)
+X_train_grid, X_val_grid, y_train_grid, y_val_grid = train_test_split(
+    X_train, y_train, test_size=0.2, stratify=y_train, random_state=42
+)
 
-# Exibir o Classification Report global (não precisa de remoção de colunas)
-print("\n📊 Classification Report (Global):")
-print(report_df.to_string())
+# GridSearchCV
+grid_search = GridSearchCV(pipeline, param_grid, scoring='roc_auc', cv=3, n_jobs=-1, verbose=1)
+grid_search.fit(X_train_grid, y_train_grid)
 
-# 7. Matriz de confusão (imagem)
-cm = confusion_matrix(y, y_pred_cv)
+
+best_model = grid_search.best_estimator_
+y_prob = best_model.predict_proba(X_test)[:, 1]
+
+best_threshold = 0.36
+y_pred_best = (y_prob > best_threshold).astype(int)
+
+# Avaliação
+roc_auc = roc_auc_score(y_test, y_prob)
+accuracy = accuracy_score(y_test, y_pred_best)
+precision = precision_score(y_test, y_pred_best)
+recall = recall_score(y_test, y_pred_best)
+f1 = f1_score(y_test, y_pred_best)
+
+print(f"AUC: {roc_auc:.4f}")
+print(f"Acurácia: {accuracy:.4f}")
+print(f"Precisão: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1-Score: {f1:.4f}")
+print("\n📋 Classification Report:")
+print(classification_report(y_test, y_pred_best, digits=3))
+
+# Matriz de Confusão
+cm = confusion_matrix(y_test, y_pred_best)
+print("\n📊 Matriz de Confusão:")
+print(cm)
+
 fig, ax = plt.subplots(figsize=(5, 4))
 cax = ax.matshow(cm, cmap='Blues')
 for i in range(2):
@@ -87,40 +92,49 @@ ax.set_xticklabels(['Sobrevivente', 'Óbito'])
 ax.set_yticklabels(['Sobrevivente', 'Óbito'])
 plt.xlabel('Predito')
 plt.ylabel('Real')
-plt.title('Matriz de Confusão (CV)')
+plt.title('Matriz de Confusão')
 fig.colorbar(cax)
 plt.tight_layout()
-plt.savefig("matriz_confusao_cv.png")
+plt.savefig("matriz_confusao.png")
 plt.close()
 
-# 8. SHAP - Importância das variáveis ordenadas
-model.fit(X_scaled, y)
-explainer = shap.Explainer(model)
-shap_values = explainer(X_scaled)
-shap_abs = np.abs(shap_values.values).mean(axis=0)
-features = X.columns
-shap_df = pd.DataFrame({
-    'feature': features,
-    'mean_abs_shap': shap_abs
-}).sort_values(by='mean_abs_shap', ascending=True)
+# 13. SHAP - Exibir variáveis e suas importâncias, ignorando as irrelevantes
+explainer = shap.Explainer(best_model.named_steps['model'], X_train)
+shap_values = explainer(X_test)
 
-plt.figure(figsize=(8, 10))
-plt.barh(shap_df['feature'], shap_df['mean_abs_shap'])
-plt.xlabel('Importância média (|SHAP|)')
-plt.title('Importância das variáveis - SHAP (CV)')
-plt.tight_layout()
-plt.savefig("shap_barplot_cv.png")
-plt.close()
+# Organizar as importâncias e filtrar as variáveis com importância maior que zero
+shap_importances = pd.DataFrame({
+    'Feature': X_test.columns,
+    'Importance': np.abs(shap_values.values).mean(axis=0)
+})
 
-# 9. Exportar falsos positivos e negativos
-df_preds = pd.DataFrame(X)
-df_preds['y_real'] = y.values
-df_preds['y_prob'] = y_prob_cv
-df_preds['y_pred'] = y_pred_cv
+# Verificar a importância específica de 'idade'
+idade_importance = shap_importances[shap_importances['Feature'] == 'idade']
+print(f"\n📊 Importância da variável 'idade':")
+print(idade_importance)
+
+# Filtrar variáveis com importância maior que zero
+shap_importances_filtered = shap_importances[shap_importances['Importance'] > 0]
+
+# Ordenar as variáveis pela importância
+shap_importances_filtered = shap_importances_filtered.sort_values(by='Importance', ascending=False)
+
+# Exibir no console as variáveis com importância maior que zero
+print("\n📊 Importância das variáveis (somente as relevantes):")
+print(shap_importances_filtered)
+
+# Plotar o gráfico de barras com as variáveis mais importantes
+shap.summary_plot(shap_values, X_test, plot_type="bar", max_display=20)
+
+
+# Falsos positivos e negativos
+df_preds = pd.DataFrame(X_test)
+df_preds['y_real'] = y_test.values
+df_preds['y_prob'] = y_prob
+df_preds['y_pred'] = y_pred_best
 df_preds['erro'] = df_preds['y_real'] != df_preds['y_pred']
 
 falsos_negativos = df_preds[(df_preds['y_real'] == 1) & (df_preds['y_pred'] == 0)]
 falsos_positivos = df_preds[(df_preds['y_real'] == 0) & (df_preds['y_pred'] == 1)]
-
-falsos_negativos.to_csv("falsos_negativos_cv.csv", index=False)
-falsos_positivos.to_csv("falsos_positivos_cv.csv", index=False)
+falsos_negativos.to_csv("falsos_negativos.csv", index=False)
+falsos_positivos.to_csv("falsos_positivos.csv", index=False)
