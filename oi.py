@@ -16,7 +16,7 @@ from imblearn.pipeline import Pipeline as ImbPipeline
 
 warnings.filterwarnings("ignore")
 
-df = pd.read_csv("Dataset.csv")
+df = pd.read_csv("dataset.csv")
 df["gender"] = df["gender"].map({"F": 0, "M": 1})
 
 df = df.loc[:, df.isnull().mean() < 0.7]
