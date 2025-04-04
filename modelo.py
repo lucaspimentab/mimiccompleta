@@ -16,13 +16,13 @@ from imblearn.pipeline import Pipeline as ImbPipeline
 
 warnings.filterwarnings("ignore")
 
-df = pd.read_csv("dataset_modelagem_completo.csv")
+df = pd.read_csv("dataset_teste.csv")
 df["gender"] = df["gender"].map({"F": 0, "M": 1})
 
 df = df.loc[:, df.isnull().mean() < 0.7]
 
 
-X = df.drop(columns=["subject_id", "target", "stay_id"])
+X = df.drop(columns=["subject_id", "target", "stay_id", "media", "ultimo_valor", "variancia"])
 y = df["target"]
 
 X_train, X_test, y_train, y_test = train_test_split(
@@ -108,11 +108,6 @@ shap_importances = pd.DataFrame({
     'Importance': np.abs(shap_values.values).mean(axis=0)
 })
 
-# Verificar a importância específica de 'idade'
-idade_importance = shap_importances[shap_importances['Feature'] == 'idade']
-print(f"\n📊 Importância da variável 'idade':")
-print(idade_importance)
-
 # Filtrar variáveis com importância maior que zero
 shap_importances_filtered = shap_importances[shap_importances['Importance'] > 0]
 
@@ -123,8 +118,21 @@ shap_importances_filtered = shap_importances_filtered.sort_values(by='Importance
 print("\n📊 Importância das variáveis (somente as relevantes):")
 print(shap_importances_filtered)
 
-# Plotar o gráfico de barras com as variáveis mais importantes
-shap.summary_plot(shap_values, X_test, plot_type="bar", max_display=20)
+# 1. Gráfico de Dispersão SHAP
+shap.summary_plot(shap_values, X_test)
+plt.savefig("shap_summary_plot.png", bbox_inches="tight")
+plt.close()  
+
+# 2. Gráfico de Barras SHAP
+shap.summary_plot(shap_values, X_test, plot_type="bar")
+plt.savefig("shap_bar_plot.png", bbox_inches="tight")
+plt.close() 
+
+# 3. Gráfico de Dependência SHAP
+shap.dependence_plot("Feature_Important", shap_values, X_test)
+plt.savefig("shap_dependence_plot.png", bbox_inches="tight")
+plt.close()  
+
 
 
 # Falsos positivos e negativos
